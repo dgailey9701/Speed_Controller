@@ -126,7 +126,7 @@ WEAK void Reserved54_IRQHandler(void);
 WEAK void ADC0_IRQHandler(void);
 WEAK void CMP0_IRQHandler(void);
 WEAK void CMP1_IRQHandler(void);
-WEAK void FTM0_IRQHandler(void);
+WEAK void System_FTM0_IRQ(void);
 WEAK void FTM1_IRQHandler(void);
 WEAK void FTM2_IRQHandler(void);
 WEAK void Reserved61_IRQHandler(void);
@@ -328,7 +328,7 @@ void (* const g_pfnVectors[])(void) = {
     ADC0_IRQHandler,            // 55: ADC0 interrupt
     CMP0_IRQHandler,            // 56: CMP0 interrupt
     CMP1_IRQHandler,            // 57: CMP1 interrupt
-    FTM0_IRQHandler,            // 58: FTM0 fault, overflow and channels interrupt
+    System_FTM0_IRQ,            // 58: FTM0 fault, overflow and channels interrupt
     FTM1_IRQHandler,            // 59: FTM1 fault, overflow and channels interrupt
     FTM2_IRQHandler,            // 60: FTM2 fault, overflow and channels interrupt
     Reserved61_IRQHandler,      // 61: Reserved interrupt

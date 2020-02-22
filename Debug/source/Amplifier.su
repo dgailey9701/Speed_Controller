@@ -1,0 +1,10 @@
+core_cm4.h:1677:22:__NVIC_EnableIRQ	16	static
+core_cm4.h:1766:22:__NVIC_ClearPendingIRQ	16	static
+core_cm4.h:1805:22:__NVIC_SetPriority	16	static
+Amplifier.c:98:6:Amp_Init	8	static
+Amplifier.c:213:6:Amp_Init_Control_Values	16	static
+Amplifier.c:234:6:Amp_ADC0_Init_Calibrate	4	static
+Amplifier.c:282:6:Amp_ADC0_Init_Sampling	4	static
+Amplifier.c:348:6:Amp_Foreground_Update	8	static
+Amplifier.c:439:6:Amp_ADC0_Calibrate	16	static
+Amplifier.c:514:6:Amp_Disable_Amplifier	4	static

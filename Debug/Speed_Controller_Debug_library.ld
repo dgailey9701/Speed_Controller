@@ -6,12 +6,12 @@
  * Generated linker script file for MKV31F256xxx12
  * Created from library.ldt by FMCreateLinkLibraries
  * Using Freemarker v2.3.23
- * MCUXpresso IDE v11.0.1 [Build 2563] [2019-09-01] on Feb 8, 2020 8:34:50 PM
+ * MCUXpresso IDE v11.0.1 [Build 2563] [2019-09-01] on Feb 22, 2020 10:19:34 AM
  */
 
 GROUP (
-  "libcr_semihost_nf.a"
-  "libcr_c.a"
-  "libcr_eabihelpers.a"
   "libgcc.a"
+  "libc_nano.a"
+  "libm.a"
+  "libcr_newlib_nohost.a"
 )

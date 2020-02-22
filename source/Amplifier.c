@@ -61,7 +61,39 @@
 //#############################################################################
 
 #include "MKV31F25612.h"
+#include "System_Speed_Controller.h"
+#include <stdint.h>
 #include "Amplifier.h"
+
+int32_t gl_amp_null_dutycycle = 0;
+
+static int32_t gl_amp_cntrl[AMP_L_CNTRL_SIZE];
+
+static float gf_amp_cntrl[AMP_F_CNTRL_SIZE];
+
+static amp_flags_t g_amp_flags = {0};
+
+static float gf_amp_param[AMP_F_CNTRL_SIZE][4] = {
+//  DEFAULT 	MIN			MAX			ATTRIBUTES
+   {0.0f, 		0.0f, 		0.0f, 		RO_F},		// AMP_F_CUR_PHS
+   {0.0f, 		0.0f, 		0.0f, 		RO_F},		// AMP_F_CUR_PHT
+   {0.0f, 		0.0f, 		0.0f, 		RO_F},		// AMP_F_CUR_PHR
+
+};
+
+static int32_t gl_amp_param[AMP_L_CNTRL_SIZE][4] = {
+//  DEFAULT 	MIN			MAX			ATTRIBUTES
+   {0,			0,			0,			RO},		// AMP_L_STATUS
+   {0,			0,			0,			RO},		// AMP_L_FRGD_STATE
+
+};
+
+// Declare local functions
+void Amp_ADC0_Init_Calibrate (void);
+void Amp_ADC0_Init_Sampling (void);
+void Amp_ADC0_Calibrate(void);
+void Amp_Init_Control_Values(void);
+
 
 void Amp_Init(void)
 //*****************************************************************************
@@ -75,52 +107,42 @@ void Amp_Init(void)
 //
 //*****************************************************************************
 {
-    // Set the Digital Filter Width Register to 32, which at 96 MHZ translates
-    // to a pass frequency of about 1.5 Mhz
-    PORTB_DFWR = 31;
-
-    // Enable the filter for Port Pin B3
-    PORTB_DFER |= (1 << 3);
-
-    // Initialize FTM0 as a system tick and PWM. Using FlexTimer Module in
-    // Complementary Center-aligned mode See Application Note AN3729
-
     // Enable clock for FTM0
-    SIM_SCGC6 |= SIM_SCGC6_FTM0_MASK;
+    SIM->SCGC6 |= SIM_SCGC6_FTM0_MASK;
 
     // Disable write protection
-    FTM0_MODE |= FTM_MODE_WPDIS_MASK;
+    FTM0->MODE |= FTM_MODE_WPDIS_MASK;
 
     // Output Polarity Setting
-    FTM0_POL = 0x00;
+    FTM0->POL = 0x00;
 
     // Disable all channels outputs using the OUTPUT MASK feature.
-    FTM0_OUTMASK =   FTM_OUTMASK_CH5OM_MASK | FTM_OUTMASK_CH4OM_MASK
+    FTM0->OUTMASK =   FTM_OUTMASK_CH5OM_MASK | FTM_OUTMASK_CH4OM_MASK
                      | FTM_OUTMASK_CH3OM_MASK | FTM_OUTMASK_CH2OM_MASK
                      | FTM_OUTMASK_CH1OM_MASK | FTM_OUTMASK_CH0OM_MASK;
 
     // Set system clock as source for FTM0 (CLKS[1:0] = 01)
-    FTM0_SC |= FTM_SC_CLKS(1) | FTM_SC_PS(0) ;
+    FTM0->SC |= FTM_SC_CLKS(1) | FTM_SC_PS(0);
 
     // Set PWM frequency; MODULO = Fclk/Fpwm
     // for center aligned PWM using combine mode
     // MODULO = 96 MHz/ 20 kHz / 2 = 2399
-    FTM0_MOD = (AMP_SYS_CLK/AMP_PWM_FREQ/2) - 1;
+    FTM0->MOD = (AMP_SYS_CLK/AMP_PWM_FREQ/2) - 1;
 
     //  Set the configuration to force the outputs to the safe values as
     //  specified in the POLn bits of the FTM0_POL when the controller
     //  is placed in BDM.
-    FTM0_CONF = 0x40;
+    FTM0->CONF = 0x40;
 
     // CNTIN = -(96 MHz / 20 kHz / 2) = -2400
-    FTM0_CNTIN = -(AMP_SYS_CLK/AMP_PWM_FREQ/2);
+    FTM0->CNTIN = -(AMP_SYS_CLK/AMP_PWM_FREQ/2);
 
     //  COMBINE = 1 - Set the combine mode
     //  COMP = 1 - Set to complementary mode
     //  DTEN = 1 - Enable dead-time
     //  SYNCEN = 1 - PWM update synchronization enabled,
     //  FAULTEN = 1 - fault control enabled
-    FTM0_COMBINE = FTM_COMBINE_SYNCEN0_MASK | FTM_COMBINE_DTEN0_MASK
+    FTM0->COMBINE = FTM_COMBINE_SYNCEN0_MASK | FTM_COMBINE_DTEN0_MASK
                | FTM_COMBINE_COMP0_MASK   | FTM_COMBINE_COMBINE0_MASK
                | FTM_COMBINE_FAULTEN0_MASK
                | FTM_COMBINE_SYNCEN1_MASK | FTM_COMBINE_DTEN1_MASK
@@ -133,43 +155,43 @@ void Amp_Init(void)
     //  FAULTM = 0x11 Enable Fault Control on all channels with automatic
     //                fault clearing.
     //  FTMEM = 1     Enable access to all FTM registers with no restrictions.
-    FTM0_MODE |= FTM_MODE_FAULTM_MASK | FTM_MODE_FTMEN_MASK;
+    FTM0->MODE |= FTM_MODE_FAULTM_MASK | FTM_MODE_FTMEN_MASK;
 
     //  CNTMAX = 1 - Enable synchronizing to the maximum value
-    FTM0_SYNC |= FTM_SYNC_CNTMAX_MASK;
+    FTM0->SYNC |= FTM_SYNC_CNTMAX_MASK;
 
     // Set the Dead time to n counts.
-    FTM0_DEADTIME = 0x6E;
+    FTM0->DEADTIME = 0x6E;
 
     // Initial setting of value registers to 50 % of duty cycle
-    FTM0_C0V = -gl_amp_null_dutycycle;
-    FTM0_C1V = gl_amp_null_dutycycle;
-    FTM0_C2V = -gl_amp_null_dutycycle;
-    FTM0_C3V = gl_amp_null_dutycycle;
-    FTM0_C4V = -gl_amp_null_dutycycle;
-    FTM0_C5V = gl_amp_null_dutycycle;
+    FTM0->CONTROLS[0].CnV = -gl_amp_null_dutycycle;
+    FTM0->CONTROLS[1].CnV = gl_amp_null_dutycycle;
+    FTM0->CONTROLS[2].CnV = -gl_amp_null_dutycycle;
+    FTM0->CONTROLS[3].CnV = gl_amp_null_dutycycle;
+    FTM0->CONTROLS[4].CnV = -gl_amp_null_dutycycle;
+    FTM0->CONTROLS[5].CnV = gl_amp_null_dutycycle;
 
-    FTM0_PWMLOAD = FTM_PWMLOAD_LDOK_MASK;
-    FTM0_EXTTRIG |= FTM_EXTTRIG_INITTRIGEN_MASK;
+    FTM0->PWMLOAD = FTM_PWMLOAD_LDOK_MASK;
+    FTM0->EXTTRIG |= FTM_EXTTRIG_INITTRIGEN_MASK;
 
     // SWSYNC = 1 - set PWM value update. This bit is cleared automatically
-    FTM0_SYNC |= FTM_SYNC_SWSYNC_MASK;
+    FTM0->SYNC |= FTM_SYNC_SWSYNC_MASK;
 
     // ELSnB:ELSnA = 1:0 Set channel mode to generate positive PWM
-    FTM0_C0SC |= FTM_CnSC_ELSB_MASK ;
-    FTM0_C1SC |= FTM_CnSC_ELSB_MASK ;
-    FTM0_C2SC |= FTM_CnSC_ELSB_MASK ;
-    FTM0_C3SC |= FTM_CnSC_ELSB_MASK ;
-    FTM0_C4SC |= FTM_CnSC_ELSB_MASK ;
-    FTM0_C5SC |= FTM_CnSC_ELSB_MASK ;
+    FTM0->CONTROLS[0].CnSC |= FTM_CnSC_ELSB_MASK;
+    FTM0->CONTROLS[1].CnSC |= FTM_CnSC_ELSB_MASK;
+    FTM0->CONTROLS[2].CnSC |= FTM_CnSC_ELSB_MASK;
+    FTM0->CONTROLS[3].CnSC |= FTM_CnSC_ELSB_MASK;
+    FTM0->CONTROLS[4].CnSC |= FTM_CnSC_ELSB_MASK;
+    FTM0->CONTROLS[5].CnSC |= FTM_CnSC_ELSB_MASK;
 
-    /* PORTs for FTM0 initialization */
-    PORTC_PCR1 = PORT_PCR_MUX(4); /* FTM0 CH0 */
-    PORTC_PCR2 = PORT_PCR_MUX(4); /* FTM0 CH1 */
-    PORTC_PCR3 = PORT_PCR_MUX(4); /* FTM0 CH2 */
-    PORTC_PCR4 = PORT_PCR_MUX(4); /* FTM0 CH3 */
-    PORTD_PCR4 = PORT_PCR_MUX(4); /* FTM0 CH4 */
-    PORTD_PCR5 = PORT_PCR_MUX(4); /* FTM0 CH5 */
+    /* Port D pin alternate pin settings for FTM0 initialization */
+    PORTD->PCR[0] = PORT_PCR_MUX(4); /* FTM0 CH0 */
+    PORTD->PCR[1] = PORT_PCR_MUX(4); /* FTM0 CH1 */
+    PORTD->PCR[2] = PORT_PCR_MUX(4); /* FTM0 CH2 */
+    PORTD->PCR[3] = PORT_PCR_MUX(4); /* FTM0 CH3 */
+    PORTD->PCR[4] = PORT_PCR_MUX(4); /* FTM0 CH4 */
+    PORTD->PCR[5] = PORT_PCR_MUX(4); /* FTM0 CH5 */
 
     // Set FTMO ISR Priority and enable
     NVIC_SetPriority(FTM0_IRQn, 0x00);
@@ -177,22 +199,327 @@ void Amp_Init(void)
     NVIC_ClearPendingIRQ(FTM0_IRQn);
 
     //  Enable the interrupt
-    FTM0_SC |= FTM_SC_TOIE_MASK;
+    FTM0->SC |= FTM_SC_TOIE_MASK;
 
-    // Initialize controller value and parameter structures
     Amp_Init_Control_Values();
 
-    // Ensure the disable amplifier flag is set
     Amp_Disable_Amplifier();
 
-    // Set up the ADC for calibration
-    Amp_ADC1_Init_Calibrate();
-
-    // Turn off all fault indicators.
-    gl_amp_cntrl_values[AMP_STATUS] &= ~(AMP_ALL_FAULTS_MASK);
-
-    // Initialize motor current first order filter 3dB point approximately
-    // 25 Hz - Used to determine motor torque.
-    Filter_First_Order_Init(&g_torq_filter, 32511, 32767, 0);
+    Amp_ADC0_Init_Calibrate();
 
 }   // End of void Amp_Init(void)
+
+
+void Amp_Init_Control_Values(void)
+//*****************************************************************************
+//  Description:
+//
+//*****************************************************************************
+{
+    for (uint16_t i = 0; i < AMP_L_CNTRL_SIZE; i++)
+    {
+        gl_amp_cntrl[i] = gl_amp_param[i][DEF];
+
+    }
+
+    for (uint16_t i = 0; i < AMP_F_CNTRL_SIZE; i++)
+    {
+        gf_amp_cntrl[i] = gf_amp_param[i][DEF];
+
+    }
+
+}
+
+
+void Amp_ADC0_Init_Calibrate (void)
+//*****************************************************************************
+//  Description: This function initializes the resources required by ADC1
+//               before calibration begins.
+//
+//*****************************************************************************
+{
+    // Configure ADC1 for calibration
+
+    // Set the port pins to use the default ADC functionality
+    PORTB->PCR[0] = (0|PORT_PCR_MUX(0));
+    PORTB->PCR[1] = (0|PORT_PCR_MUX(0));
+    PORTB->PCR[2] = (0|PORT_PCR_MUX(0));
+
+    // Enable the ADC1 clock
+    SIM->SCGC6 |= (SIM_SCGC6_ADC0_MASK);
+
+    // CFG1: Total ADC clock = 120 MHz/16 = 7.5 MHz
+    // ADICLK = 0b01 - Bus clock divided by 2
+    // MODE = 0b11 - 16-bit conversion
+    // ADLSMP = 1 - Long Sample Time
+    // ADIV = 0b11 - Divide Ratio is 8
+    ADC0->CFG1 = ADC_CFG1_ADICLK(0x00) | ADC_CFG1_MODE(0x3) |
+    		ADC_CFG1_ADLSMP(0x1) | ADC_CFG1_ADIV(0x3);
+
+    // CFG2:
+    // ADLSTS = 0b10 - 6 extra ADCK cycles; 10 ADCK cycles total sample time
+    // ADHSC = 1 - Hispeed conversion sequence
+    // ADACKEN = 1 - Asynchronous clock and clock output enabled
+    ADC0->CFG2 = ADC_CFG2_ADLSTS(0x3) | ADC_CFG2_ADHSC_MASK |
+    													ADC_CFG2_ADACKEN_MASK;
+
+    // SC3:
+    // AVGS = 0b11 - 32 samples averaged
+    // AVGE = 0b1 - Hardware average function enabled
+    ADC0->SC3 = ADC_SC3_AVGS(0x3) | ADC_SC3_AVGE_MASK;
+
+    // Start calibration on ADC
+
+    // Clear any existing calibration failed flag
+    ADC0->SC3 &= ~ADC_SC3_CALF_MASK;
+
+    // Start calibration
+    ADC0->SC3 |= ADC_SC3_CAL_MASK ;
+
+}   // End of void Amp_ADC1_Init_Calibrate (void)
+
+
+void Amp_ADC0_Init_Sampling (void)
+//*****************************************************************************
+//  Description: This function initializes the resources required by ADC 1 after
+//               calibration to begin sampling
+//
+//*****************************************************************************
+{
+    //  ++++++ Initialize the PDB to trigger ADC1  ++++++
+    //  Initialize the clock
+    SIM->SCGC6 |= SIM_SCGC6_PDB_MASK;
+
+    // Enable pre-trigger channel one
+    PDB0->CH[1].C1 |= PDB_C1_EN(0x1) | PDB_C1_TOS(0x1);
+
+    // Set the delay to the middle of the PWM period
+    // TODO Need to figure out optimal location for PDB trigger. Use interrupt
+    // to find best location
+    PDB0->CH[1].DLY[0] = 1500;//AMP_SYS_CLK/AMP_PWM_FREQ/2;
+
+    // Start up the unit, including initializing the interrupt
+    PDB0->SC = (PDB_SC_PDBEN_MASK | PDB_SC_PRESCALER (0X0) |
+    			PDB_SC_TRGSEL(0X8) | PDB_SC_MULT(0) | PDB_SC_LDOK_MASK);
+
+    // CFG1: Total ADC clock = 120 MHz/8 = 15 MHz
+    // ADICLK = 0b01 - Bus clock divided by 2
+    // MODE = 0b11 - 16-bit conversion
+    // ADLSMP = 1 - Long Sample Time
+    // ADIV = 0b10 - Divide Ratio is 4
+    ADC0->CFG1 = ADC_CFG1_ADICLK(0x0) | ADC_CFG1_MODE(0x3) |
+    		ADC_CFG1_ADLSMP(0x1) | ADC_CFG1_ADIV(0x2);
+
+    // CFG2:
+    // ADLSTS = 0b10 - 6 extra ADCK cycles; 10 ADCK cycles total sample time
+    // ADHSC = 1 - High Speed Conversion Sequence
+    // ADACKEN = 1 - Asynchronous clock and clock output enabled
+    // MUXSEL = 0 - ADxxa channels are selected
+    ADC0->CFG2 = ADC_CFG2_MUXSEL(0x0) | ADC_CFG2_ADACKEN(0x1) |
+    							ADC_CFG2_ADHSC(0x1) | ADC_CFG2_ADLSTS(0x2);
+
+    // SC2:
+    // ADTRG_HW = 1 - Hardware trigger selected
+    // ACFE = 0 - Compare function disabled
+    // ACFGT = 1 - Configures >= threshold
+    // ACREN = 0 - Range function disabled
+    // DMAEN = 0 - DMA is disabled
+    // REFSEL = 0b00 - Default voltage reference
+    ADC0->SC2 = ADC_SC2_ADTRG(0x1) | ADC_SC2_ACFE(0x0) | ADC_SC2_ACFGT(0x1) |
+    			ADC_SC2_ACREN(0x0) | ADC_SC2_DMAEN(0x0) | ADC_SC2_REFSEL(0x0);
+
+    // SC3:
+    // CAL = 0 - Ensure the calibration flag is not set
+    // ADCO = 0 - One set of conversions after initiating a conversion
+    // AVGE = 1 - Hardware average functionality enabled
+    // AVGS = 0b00 - 4 Samples averaged
+    ADC0->SC3 = ADC_SC3_CALF(0x0) | ADC_SC3_ADCO(0x0) | ADC_SC3_AVGE(0x1) |
+    											         ADC_SC3_AVGS(0x0);
+
+    // SC1A:
+    // AIEN = 0 - Conversion Complete interrupt is disabled
+    // DIFF = 0 - Single-ended conversions and input channels are selected
+    // ADCH = 0b01000 - Selects channel AD08 Initially (Will vary)
+    ADC0->SC1[0] = ADC_SC1_AIEN(0x0) | ADC_SC1_DIFF(0x0) | ADC_SC1_ADCH(CHAN_PHASE_S);
+
+}   // End of void Amp_ADC1_init_sampling (void)
+
+
+void Amp_Foreground_Update(void)
+//*****************************************************************************
+//  Description:
+//
+//*****************************************************************************
+{
+	static uint32_t ul_foreground_counter = 0;
+
+    switch (gl_amp_cntrl[AMP_FRGD_STATE])
+    {
+        //  +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+        case AMP_STATE_CALIBRATE:
+        //  +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+        {
+            // Initially disable amplifier
+            Amp_Disable_Amplifier();
+
+            if (gl_amp_cntrl[AMP_STATUS] & AMP_ADC_CALIBRATED)
+            {
+                // The motor current ADC has successfully calibrated,
+                // initialize the ADC hardware to start sampling.
+                Amp_ADC0_Init_Sampling();
+
+                // Change the amplifier state to initialize the motor current
+                // readings from the ADC.
+                gl_amp_cntrl[AMP_FRGD_STATE] = AMP_STATE_INITIALIZE;
+
+            }   // End of if (gl_amp_cntrl_values[AMP_STATUS] & AMP_ADC ...
+            else if (gl_amp_cntrl[AMP_STATUS] & AMP_CALIBRATION_ERROR)
+            {
+                // Calibration failed, reinitialize ADC and attempt to recal
+                Amp_ADC0_Init_Calibrate();
+
+            }   // End of else if (gl_amp_cntrl_values[AMP_STATUS] & AMP ...
+            else
+            {
+                // Check if the calibration has finished and if it was
+                // successful.
+                Amp_ADC0_Calibrate();
+
+            }   // End of else
+
+            break;
+
+        }   // End of case AMP_STATE_CALIBRATE:
+        //  +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+        case AMP_STATE_INITIALIZE:
+        //  +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+        {
+            // Initially disable amplifier
+            Amp_Disable_Amplifier();
+
+            // Increment the current read counter. Read the current several
+            // times before
+            ul_foreground_counter++;
+
+            // Take several readings to allow the ADC voltages time to
+            // initialize before normal runtime.
+            if (ul_foreground_counter >= 500)
+            {
+                // Change the amplifier state to normal operation.
+            	gl_amp_cntrl[AMP_FRGD_STATE] = AMP_STATE_RUNTIME;
+
+                gl_amp_cntrl[AMP_STATUS] |= AMP_MODULE_INITD;
+
+            }   // End of if (ul_current_count >= 500)
+
+            break;
+
+        }   // End of case AMP_STATE_INITIALIZE:
+        //  +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+        case AMP_STATE_RUNTIME:
+        //  +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+        {
+
+            break;
+
+        }   // End of case AMP_STATE_RUNTIME:
+        //  +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+        default:
+        //  +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+        {
+        	gl_amp_cntrl[AMP_FRGD_STATE] = AMP_STATE_RUNTIME;
+
+        }   // End of default:
+
+    }   // End of switch(ul_amp_state)
+
+}
+
+
+void Amp_ADC0_Calibrate (void)
+//*****************************************************************************
+//  Description: This function checks the calibration bits and runs
+//               calculations for the ADC1 calibration. A flag is set if the
+//               calibration is successful or if it has failed.
+//
+//*****************************************************************************
+{
+    uint16_t un_cal_temp = 0;
+
+    if(ADC0->SC1[0] & ADC_SC1_COCO_MASK)
+    {
+        // The calibration has finished, check if it was successful.
+        if (ADC0->SC3 & ADC_SC3_CALF_MASK)
+        {
+            // Set flag indicating a calibration error has occurred.
+            gl_amp_cntrl[AMP_STATUS] |= (AMP_CALIBRATION_ERROR |
+                                                AMP_CALIBRATION_ERROR_STICKY |
+                                                     AMP_MODULE_FAULT_STICKY);
+
+        }   // End of if (ADC1_SC3 & CALF_FAIL)
+        else
+        {
+            un_cal_temp = 0;
+
+            // The calibration was successful, calculate positive calibration
+            un_cal_temp =  ADC0->CLP0;
+            un_cal_temp += ADC0->CLP1;
+            un_cal_temp += ADC0->CLP2;
+            un_cal_temp += ADC0->CLP3;
+            un_cal_temp += ADC0->CLP4;
+            un_cal_temp += ADC0->CLPS;
+
+            un_cal_temp = un_cal_temp >> 1;
+
+            // Set MSb
+            un_cal_temp |= 0x8000;
+
+            // And save
+            ADC0->PG = ADC_PG_PG(un_cal_temp);
+
+            // Repeat for the negative calibration
+            un_cal_temp = 0x00;
+
+            un_cal_temp = ADC0->CLM0;
+            un_cal_temp += ADC0->CLM1;
+            un_cal_temp += ADC0->CLM2;
+            un_cal_temp += ADC0->CLM3;
+            un_cal_temp += ADC0->CLM4;
+            un_cal_temp += ADC0->CLMS;
+
+            un_cal_temp = un_cal_temp >> 1;
+
+            un_cal_temp |= 0x8000;
+
+            ADC0->MG = ADC_MG_MG(un_cal_temp);
+
+            // Clear the calibration bit
+            ADC0->SC3 &= ~ADC_SC3_CAL_MASK;
+
+            // Clear calibration error flag.
+            gl_amp_cntrl[AMP_STATUS] &= ~AMP_CALIBRATION_ERROR;
+
+            // Set flag indicating ADC calibration is finished.
+            gl_amp_cntrl[AMP_STATUS] |= AMP_ADC_CALIBRATED;
+
+        }   // End of else
+
+    }   // End of if(ADC1_SC1A & ADC_SC1_COCO_MASK)
+
+}   // End of void Amp_ADC1_calibrate (void)
+
+
+
+
+void Amp_Disable_Amplifier(void)
+//*****************************************************************************
+//  Description:
+//
+//*****************************************************************************
+{
+    g_amp_flags.disable_amp_request = TRUE;
+
+}   // End of void Amp_Disable_Amplifier(void)
+
+
+
