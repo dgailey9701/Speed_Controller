@@ -9,7 +9,7 @@
 #define AMPLIFIER_H_
 
 // Amplifier timing parameters
-#define AMP_SYS_CLK 120000000
+#define AMP_SYS_CLK 96000000
 #define AMP_PWM_FREQ 20000
 
 typedef enum
@@ -28,11 +28,19 @@ typedef enum
 {
 	AMP_STATUS,
 
-	AMP_FRGD_STATE
+	AMP_FRGD_STATE,
+
+	AMP_FEEDBACK_PHS,
+
+	AMP_FEEDBACK_PHT,
+
+	AMP_FEEDBACK_PHR,
+
+	AMP_COMMUTATION,
 
 } amp_l_cntrl_t;
 
-#define AMP_L_CNTRL_SIZE  2
+#define AMP_L_CNTRL_SIZE  6
 
 // Define amplifier foreground states
 typedef enum
@@ -46,7 +54,18 @@ typedef enum
 // Define ADC channels
 #define CHAN_PHASE_S    8
 #define CHAN_PHASE_T    9
-#define CHAN_PHASE_R    10
+#define CHAN_PHASE_R    12
+
+// Define PWM no inversion for any phases
+#define AMP_INVERT_NONE     0x00
+
+// Define PWM output phase masking
+#define AMP_DISABLE_ALL_PH  0x3F
+
+// Define Maximum and Minimum Valid Hall States. Any hall state between or
+// or equal to these values is considered valid.
+#define AMP_MAX_VALID_HALL 6
+#define AMP_MIN_VALID_HALL 1
 
 // Define Amplifier internal flags. Each flag is represented by a native
 // integer type. The flags are not bit packed into a single variable to avoid

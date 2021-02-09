@@ -40,23 +40,15 @@
 #include "MKV31F25612.h"
 #include "Amplifier.h"
 #include "System_Speed_Controller.h"
-/* TODO: insert other include files here. */
 
-/* TODO: insert other definitions and declarations here. */
+int i = 0;
 
-/*
- * @brief   Application entry point.
- */
 int main(void) {
   	/* Init board hardware. */
     BOARD_InitBootPins();
     BOARD_InitBootClocks();
     BOARD_InitBootPeripherals();
 
-    printf("Hello World\n");
-
-    /* Force the counter to be placed into memory. */
-    volatile static int i = 0 ;
 
     Amp_Init();
 

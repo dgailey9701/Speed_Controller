@@ -65,13 +65,25 @@
 #include <stdint.h>
 #include "Amplifier.h"
 
-int32_t gl_amp_null_dutycycle = 0;
+int32_t gl_amp_null_dutycycle = AMP_SYS_CLK/AMP_PWM_FREQ/4;
 
 static int32_t gl_amp_cntrl[AMP_L_CNTRL_SIZE];
 
 static float gf_amp_cntrl[AMP_F_CNTRL_SIZE];
 
+static int32_t gl_current;
+
 static amp_flags_t g_amp_flags = {0};
+
+// Define the phase mask table. This table will be used along with the
+// commutation state to determine which phase will be turned off.
+static const uint16_t gun_amp_mask_table[8] = {0x3F, 0x0C, 0x03, 0x30,
+                                        0x30, 0x03, 0x0C, 0x3F};
+
+// The following phase invert table will drive the BLDC motor CCW with a
+// positive duty cycle command.
+static const uint16_t gun_amp_inv_table[8] = {0x00, 0x01, 0x04, 0x01, 0x02,
+                                              0x02, 0x04, 0x00};
 
 static float gf_amp_param[AMP_F_CNTRL_SIZE][4] = {
 //  DEFAULT 	MIN			MAX			ATTRIBUTES
@@ -83,8 +95,12 @@ static float gf_amp_param[AMP_F_CNTRL_SIZE][4] = {
 
 static int32_t gl_amp_param[AMP_L_CNTRL_SIZE][4] = {
 //  DEFAULT 	MIN			MAX			ATTRIBUTES
-   {0,			0,			0,			RO},		// AMP_L_STATUS
-   {0,			0,			0,			RO},		// AMP_L_FRGD_STATE
+   {0,			0,			0,			RO},		// AMP_STATUS
+   {0,			0,			0,			RO},		// AMP_FRGD_STATE
+   {0,			0,			0,			RO},		// AMP_FEEDBACK_PHS
+   {0,			0,			0,			RO},		// AMP_FEEDBACK_PHT
+   {0,			0,			0,			RO},		// AMP_FEEDBACK_PHR
+   {0,			0,			0,			RO},		// AMP_COMMUTATION
 
 };
 
@@ -93,6 +109,8 @@ void Amp_ADC0_Init_Calibrate (void);
 void Amp_ADC0_Init_Sampling (void);
 void Amp_ADC0_Calibrate(void);
 void Amp_Init_Control_Values(void);
+void Amp_Update_Current(void);
+void Amp_Update_PWM_Dutycycle(int32_t);
 
 
 void Amp_Init(void)
@@ -110,16 +128,25 @@ void Amp_Init(void)
     // Enable clock for FTM0
     SIM->SCGC6 |= SIM_SCGC6_FTM0_MASK;
 
+
+    /* Port D pin alternate pin settings for FTM0 initialization */
+    PORTD->PCR[0] = PORT_PCR_MUX(4); /* FTM0 CH0 */
+    PORTD->PCR[1] = PORT_PCR_MUX(4); /* FTM0 CH1 */
+    PORTD->PCR[2] = PORT_PCR_MUX(4); /* FTM0 CH2 */
+    PORTD->PCR[3] = PORT_PCR_MUX(4); /* FTM0 CH3 */
+    PORTD->PCR[4] = PORT_PCR_MUX(4); /* FTM0 CH4 */
+    PORTD->PCR[5] = PORT_PCR_MUX(4); /* FTM0 CH5 */
+
     // Disable write protection
-    FTM0->MODE |= FTM_MODE_WPDIS_MASK;
+    FTM0->MODE |= (FTM_MODE_WPDIS_MASK | FTM_MODE_FTMEN_MASK);
 
     // Output Polarity Setting
-    FTM0->POL = 0x00;
+    FTM0->POL = 0x2A;
 
     // Disable all channels outputs using the OUTPUT MASK feature.
-    FTM0->OUTMASK =   FTM_OUTMASK_CH5OM_MASK | FTM_OUTMASK_CH4OM_MASK
-                     | FTM_OUTMASK_CH3OM_MASK | FTM_OUTMASK_CH2OM_MASK
-                     | FTM_OUTMASK_CH1OM_MASK | FTM_OUTMASK_CH0OM_MASK;
+    FTM0->OUTMASK = FTM_OUTMASK_CH5OM_MASK | FTM_OUTMASK_CH4OM_MASK
+                   | FTM_OUTMASK_CH3OM_MASK | FTM_OUTMASK_CH2OM_MASK
+                    | FTM_OUTMASK_CH1OM_MASK | FTM_OUTMASK_CH0OM_MASK;
 
     // Set system clock as source for FTM0 (CLKS[1:0] = 01)
     FTM0->SC |= FTM_SC_CLKS(1) | FTM_SC_PS(0);
@@ -129,13 +156,27 @@ void Amp_Init(void)
     // MODULO = 96 MHz/ 20 kHz / 2 = 2399
     FTM0->MOD = (AMP_SYS_CLK/AMP_PWM_FREQ/2) - 1;
 
+    // CNTIN = -(96 MHz / 20 kHz / 2) = -2400
+    FTM0->CNTIN = -(AMP_SYS_CLK/AMP_PWM_FREQ/2);
+
     //  Set the configuration to force the outputs to the safe values as
     //  specified in the POLn bits of the FTM0_POL when the controller
     //  is placed in BDM.
     FTM0->CONF = 0x40;
 
-    // CNTIN = -(96 MHz / 20 kHz / 2) = -2400
-    FTM0->CNTIN = -(AMP_SYS_CLK/AMP_PWM_FREQ/2);
+    FTM0->SYNCONF |= (FTM_SYNCONF_SYNCMODE_MASK | FTM_SYNCONF_SWOM_MASK |
+    		FTM_SYNCONF_SWWRBUF_MASK | FTM_SYNCONF_SWINVC_MASK | FTM_SYNCONF_SWSOC_MASK);
+
+    //  CNTMAX = 1 - Enable synchronizing to the maximum value
+    FTM0->SYNC |= (FTM_SYNC_CNTMAX_MASK | FTM_CONF_BDMMODE(3));
+
+    FTM0->SWOCTRL = 0;
+
+    // Set the Dead time to n counts.
+    FTM0->DEADTIME = 0x0;
+
+    FTM0->PWMLOAD |= (FTM_PWMLOAD_LDOK_MASK);
+
 
     //  COMBINE = 1 - Set the combine mode
     //  COMP = 1 - Set to complementary mode
@@ -152,16 +193,16 @@ void Amp_Init(void)
                | FTM_COMBINE_COMP2_MASK   | FTM_COMBINE_COMBINE2_MASK
                |FTM_COMBINE_FAULTEN2_MASK;
 
-    //  FAULTM = 0x11 Enable Fault Control on all channels with automatic
-    //                fault clearing.
-    //  FTMEM = 1     Enable access to all FTM registers with no restrictions.
-    FTM0->MODE |= FTM_MODE_FAULTM_MASK | FTM_MODE_FTMEN_MASK;
+    // SWSYNC = 1 - set PWM value update. This bit is cleared automatically
+    FTM0->SYNC |= FTM_SYNC_SWSYNC_MASK;
 
-    //  CNTMAX = 1 - Enable synchronizing to the maximum value
-    FTM0->SYNC |= FTM_SYNC_CNTMAX_MASK;
-
-    // Set the Dead time to n counts.
-    FTM0->DEADTIME = 0x6E;
+    // ELSnB:ELSnA = 1:0 Set channel mode to generate positive PWM
+    FTM0->CONTROLS[0].CnSC = FTM_CnSC_ELSB_MASK;
+    FTM0->CONTROLS[1].CnSC = FTM_CnSC_ELSB_MASK;
+    FTM0->CONTROLS[2].CnSC = FTM_CnSC_ELSB_MASK;
+    FTM0->CONTROLS[3].CnSC = FTM_CnSC_ELSB_MASK;
+    FTM0->CONTROLS[4].CnSC = FTM_CnSC_ELSB_MASK;
+    FTM0->CONTROLS[5].CnSC = FTM_CnSC_ELSB_MASK;
 
     // Initial setting of value registers to 50 % of duty cycle
     FTM0->CONTROLS[0].CnV = -gl_amp_null_dutycycle;
@@ -171,35 +212,22 @@ void Amp_Init(void)
     FTM0->CONTROLS[4].CnV = -gl_amp_null_dutycycle;
     FTM0->CONTROLS[5].CnV = gl_amp_null_dutycycle;
 
-    FTM0->PWMLOAD = FTM_PWMLOAD_LDOK_MASK;
-    FTM0->EXTTRIG |= FTM_EXTTRIG_INITTRIGEN_MASK;
+    FTM0->OUTMASK = 0x00;//gun_amp_mask_table[gl_amp_cntrl[AMP_COMMUTATION]];
 
     // SWSYNC = 1 - set PWM value update. This bit is cleared automatically
     FTM0->SYNC |= FTM_SYNC_SWSYNC_MASK;
+    //  Enable the interrupt
+    FTM0->SC |= FTM_SC_TOIE_MASK;
 
-    // ELSnB:ELSnA = 1:0 Set channel mode to generate positive PWM
-    FTM0->CONTROLS[0].CnSC |= FTM_CnSC_ELSB_MASK;
-    FTM0->CONTROLS[1].CnSC |= FTM_CnSC_ELSB_MASK;
-    FTM0->CONTROLS[2].CnSC |= FTM_CnSC_ELSB_MASK;
-    FTM0->CONTROLS[3].CnSC |= FTM_CnSC_ELSB_MASK;
-    FTM0->CONTROLS[4].CnSC |= FTM_CnSC_ELSB_MASK;
-    FTM0->CONTROLS[5].CnSC |= FTM_CnSC_ELSB_MASK;
+    FTM0->MODE |= FTM_MODE_INIT_MASK;
 
-    /* Port D pin alternate pin settings for FTM0 initialization */
-    PORTD->PCR[0] = PORT_PCR_MUX(4); /* FTM0 CH0 */
-    PORTD->PCR[1] = PORT_PCR_MUX(4); /* FTM0 CH1 */
-    PORTD->PCR[2] = PORT_PCR_MUX(4); /* FTM0 CH2 */
-    PORTD->PCR[3] = PORT_PCR_MUX(4); /* FTM0 CH3 */
-    PORTD->PCR[4] = PORT_PCR_MUX(4); /* FTM0 CH4 */
-    PORTD->PCR[5] = PORT_PCR_MUX(4); /* FTM0 CH5 */
 
     // Set FTMO ISR Priority and enable
     NVIC_SetPriority(FTM0_IRQn, 0x00);
     NVIC_EnableIRQ(FTM0_IRQn);
     NVIC_ClearPendingIRQ(FTM0_IRQn);
 
-    //  Enable the interrupt
-    FTM0->SC |= FTM_SC_TOIE_MASK;
+    FTM0->EXTTRIG |= FTM_EXTTRIG_INITTRIGEN_MASK;
 
     Amp_Init_Control_Values();
 
@@ -291,12 +319,12 @@ void Amp_ADC0_Init_Sampling (void)
     SIM->SCGC6 |= SIM_SCGC6_PDB_MASK;
 
     // Enable pre-trigger channel one
-    PDB0->CH[1].C1 |= PDB_C1_EN(0x1) | PDB_C1_TOS(0x1);
+    PDB0->CH[0].C1 |= PDB_C1_EN(0x1) | PDB_C1_TOS(0x1);
 
     // Set the delay to the middle of the PWM period
     // TODO Need to figure out optimal location for PDB trigger. Use interrupt
     // to find best location
-    PDB0->CH[1].DLY[0] = 1500;//AMP_SYS_CLK/AMP_PWM_FREQ/2;
+    PDB0->CH[0].DLY[0] = 1500;//AMP_SYS_CLK/AMP_PWM_FREQ/2;
 
     // Start up the unit, including initializing the interrupt
     PDB0->SC = (PDB_SC_PDBEN_MASK | PDB_SC_PRESCALER (0X0) |
@@ -351,14 +379,17 @@ void Amp_Foreground_Update(void)
 //
 //*****************************************************************************
 {
+	static uint32_t ul_count = 0;
 	static uint32_t ul_foreground_counter = 0;
 
+ //   FTM0->PWMLOAD = FTM_PWMLOAD_LDOK_MASK;
     switch (gl_amp_cntrl[AMP_FRGD_STATE])
     {
         //  +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
         case AMP_STATE_CALIBRATE:
         //  +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
         {
+            FTM0->PWMLOAD = FTM_PWMLOAD_LDOK_MASK;
             // Initially disable amplifier
             Amp_Disable_Amplifier();
 
@@ -401,6 +432,8 @@ void Amp_Foreground_Update(void)
             // times before
             ul_foreground_counter++;
 
+            Amp_Update_Current();
+
             // Take several readings to allow the ADC voltages time to
             // initialize before normal runtime.
             if (ul_foreground_counter >= 500)
@@ -419,6 +452,28 @@ void Amp_Foreground_Update(void)
         case AMP_STATE_RUNTIME:
         //  +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
         {
+        	ul_count++;
+
+        	if (ul_count >= 4000)
+        	{
+            	gl_amp_cntrl[AMP_COMMUTATION]++;
+
+            	if (gl_amp_cntrl[AMP_COMMUTATION] > 6)
+            	{
+            		gl_amp_cntrl[AMP_COMMUTATION] = 1;
+
+            	}
+            	ul_count = 0;
+        	}
+
+
+        	Amp_Update_Current();
+
+        	gl_amp_cntrl[AMP_STATUS] |= AMP_MODULE_ENABLED;
+
+            //FTM0->INVCTRL = AMP_INVERT_NONE;
+            //FTM0->OUTMASK = AMP_DISABLE_ALL_PH;
+        	Amp_Update_PWM_Dutycycle(0);
 
             break;
 
@@ -509,6 +564,202 @@ void Amp_ADC0_Calibrate (void)
 }   // End of void Amp_ADC1_calibrate (void)
 
 
+void Amp_Update_Current(void)
+//*****************************************************************************
+//  Description: This function updates the motor current variable and sets up
+//               the next current reading by modifying the ADC channel based on
+//               the current the latest commutation state. Status bits are
+//               then updated based on motor current values.
+//
+//*****************************************************************************
+{
+    // Variable to used to read the raw ADC output. Set initially to the null
+    // value.
+    int32_t l_amp_feedback_raw = 32768;
+    // Variable to dump unwanted ADC readings.
+    static int32_t ul_prev_commutation = 0;
+
+    if (ADC0->SC1[0] & ADC_SC1_COCO_MASK)
+    {
+        // Load conversion from buffer based on previous commutation state.
+        switch (ul_prev_commutation)
+        {
+            //  +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+            case 4:
+            case 5:
+            //  +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+            {
+            	gl_current = ADC0->R[0];
+                gl_amp_cntrl[AMP_FEEDBACK_PHS] = l_amp_feedback_raw;
+
+                break;
+
+            }   // End of case 2: case 3:
+            //  +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+            case 1:
+            case 3:
+            //  +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+            {
+            	gl_current = ADC0->R[0];
+                gl_amp_cntrl[AMP_FEEDBACK_PHR] = gl_current;
+
+                break;
+
+            }   // End of case 4: case 6:
+            //  +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+            case 2:
+            case 6:
+            //  +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+            {
+            	gl_current = ADC0->R[0];
+                gl_amp_cntrl[AMP_FEEDBACK_PHT] = gl_current;
+
+                break;
+
+            }   // End of case 1: case 3:
+            //  +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+            default:
+            //  +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+            {
+            	gl_current = ADC0->R[0];
+                gl_amp_cntrl[AMP_FEEDBACK_PHS] = gl_current;
+
+                break;
+
+            }   // End of default:
+
+        }   // End of switch (ul_prev_commutation)
+
+        // The ADC buffer has been read, clear conversion flag
+        ADC0->SC1[0] &= ~ADC_SC1_COCO_MASK;
+
+    }   // End of if (ADC0_SC1A & ADC_SC1_COCO_MASK)
+
+
+    // Change the ADC channel based on current commutation state. If invalid
+    // commutation state detected, do not change channel.
+    switch (gl_amp_cntrl[AMP_COMMUTATION])
+    {
+        //  +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+        case 4:
+        case 5:
+        //  +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+        {
+            ADC0->SC1[0] = ADC_SC1_ADCH(CHAN_PHASE_S);
+            break;
+
+        }   // End of case 2: case 3:
+        //  +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+        case 1:
+        case 3:
+        //  +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+        {
+        	ADC0->SC1[0] = ADC_SC1_ADCH(CHAN_PHASE_R);
+            break;
+
+        }   // End of case 4: case 5:
+        //  +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+        case 2:
+        case 6:
+        //  +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+        {
+        	ADC0->SC1[0] = ADC_SC1_ADCH(CHAN_PHASE_T);
+            break;
+
+        }   // End of case 1: case 5:
+        default:
+        {
+
+            break;
+
+        }   // End of default:
+
+    }   // End of switch (gl_amp_cntrl_values[AMP_COMMUTATION])
+
+    // Load current commutation state into the previous for use in next run
+    ul_prev_commutation = gl_amp_cntrl[AMP_COMMUTATION];
+
+}   // End of void Amp_Update_Current(void)
+
+
+void Amp_Update_PWM_Dutycycle(int32_t l_dutycycle_command)
+//*****************************************************************************
+//  Description: This function provides processing and logic to drive
+//  the BLDC motor in a 6 step, complementary current mode fashion. Accepts
+//  a duty cycle command and generates PWM signals based on this input as well
+//  as the motor commutation state.
+//
+//  NOTE:
+//     - The PWM output channels are in Combine mode. In this mode, the
+//       n and n+1 channels are combined into one such that the n channel
+//       determines when the main PWM output channel switches high and the
+//       n+1 channel determines when the main PWM output switches low. The
+//       secondary output will always be the compliment of the main PWM output.
+//
+//
+//*****************************************************************************
+{
+    int16_t n_bot_dutycycle;
+    int16_t n_top_dutycycle;
+
+    // Check enable status of amplifier
+    if (!(gl_amp_cntrl[AMP_STATUS] & AMP_MODULE_ENABLED))
+    {
+        // The amplifier is disabled, disable all PWM outputs.
+        FTM0->INVCTRL = AMP_INVERT_NONE;
+        FTM0->OUTMASK = AMP_DISABLE_ALL_PH;
+
+    }   // End of if (!(gl_amp_cntrl_values[AMP_STATUS] & AMP_DRIVE_ENABLED))
+    else
+    {
+        // The amplifier is enabled, process duty cycle request.
+
+        // Limit input value to maximum signed 16-bit in the form of S1.15
+        // Value multiplied by will be shifted by 15 bits, so essentially limit
+        // duty cycle to maximum of 99.99% command
+        if (l_dutycycle_command > 32767)
+        {
+            l_dutycycle_command = 32767;
+
+        }
+        else if (l_dutycycle_command < -32767)
+        {
+            l_dutycycle_command = -32767;
+
+        }
+
+        // Determine PWM channel value based on duty cycle command
+        n_bot_dutycycle = -gl_amp_null_dutycycle +
+                        ((gl_amp_null_dutycycle*l_dutycycle_command) >> 15);
+        n_top_dutycycle = gl_amp_null_dutycycle -
+                        ((gl_amp_null_dutycycle*l_dutycycle_command) >> 15);
+
+        // Set all channel value registers with updated channel value
+        FTM0->CONTROLS[0].CnV = n_bot_dutycycle;
+        FTM0->CONTROLS[1].CnV = n_top_dutycycle;
+        FTM0->CONTROLS[2].CnV = n_bot_dutycycle;
+        FTM0->CONTROLS[3].CnV = n_top_dutycycle;
+        FTM0->CONTROLS[4].CnV = n_bot_dutycycle;
+        FTM0->CONTROLS[5].CnV = n_top_dutycycle;
+
+        // Only use the commutation value to load FTM registers if it is valid.
+        if ((gl_amp_cntrl[AMP_COMMUTATION] >= AMP_MIN_VALID_HALL) &&
+            (gl_amp_cntrl[AMP_COMMUTATION] <= AMP_MAX_VALID_HALL))
+        {
+            // Set the inverted phase to the value in the invert channel array.
+            FTM0->INVCTRL = gun_amp_inv_table[gl_amp_cntrl[AMP_COMMUTATION]];
+
+            // Mask the channel indicated in the output mask array.
+            FTM0->OUTMASK = gun_amp_mask_table[gl_amp_cntrl[AMP_COMMUTATION]];
+
+        }   // End of if ((gl_amp_cntrl_values[AMP_COMMUTATION] >= ...
+
+    }   // End of else
+
+    // Synchronize loading of all register values from buffers
+    FTM0->SYNC |= FTM_SYNC_SWSYNC_MASK;
+
+}   // End of void Amp_Update_PWM_Dutycycle(int32_t l_dutycycle_command)
 
 
 void Amp_Disable_Amplifier(void)
