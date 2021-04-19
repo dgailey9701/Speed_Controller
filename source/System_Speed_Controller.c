@@ -49,6 +49,10 @@ int main(void) {
     BOARD_InitBootClocks();
     BOARD_InitBootPeripherals();
 
+    // ++++++ Turn on all port clocks ++++++
+    SIM->SCGC5 = SIM_SCGC5_PORTA_MASK | SIM_SCGC5_PORTB_MASK |
+                SIM_SCGC5_PORTC_MASK | SIM_SCGC5_PORTD_MASK |
+                SIM_SCGC5_PORTE_MASK;
 
     Amp_Init();
 

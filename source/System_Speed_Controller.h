@@ -20,8 +20,8 @@
 
 // Define Parameter Array Index for
 #define DEF                             0       // Default values index
-#define MIN                             1       // Maximum values index
-#define MAX                             2       // Minimum values index
+#define MIN_ME                             1       // Maximum values index
+#define MAX_ME                             2       // Minimum values index
 #define ATR                             3       // Attribute values index
 
 #define TRUE							1

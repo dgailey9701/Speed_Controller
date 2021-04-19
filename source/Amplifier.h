@@ -10,7 +10,7 @@
 
 // Amplifier timing parameters
 #define AMP_SYS_CLK 96000000
-#define AMP_PWM_FREQ 20000
+#define AMP_PWM_FREQ 60000
 
 typedef enum
 {

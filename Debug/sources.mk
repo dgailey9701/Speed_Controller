@@ -16,6 +16,7 @@ C_DEPS :=
 SUBDIRS := \
 board \
 device \
+drivers \
 source \
 startup \
 

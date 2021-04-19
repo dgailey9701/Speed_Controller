@@ -128,7 +128,6 @@ void Amp_Init(void)
     // Enable clock for FTM0
     SIM->SCGC6 |= SIM_SCGC6_FTM0_MASK;
 
-
     /* Port D pin alternate pin settings for FTM0 initialization */
     PORTD->PCR[0] = PORT_PCR_MUX(4); /* FTM0 CH0 */
     PORTD->PCR[1] = PORT_PCR_MUX(4); /* FTM0 CH1 */
@@ -162,7 +161,7 @@ void Amp_Init(void)
     //  Set the configuration to force the outputs to the safe values as
     //  specified in the POLn bits of the FTM0_POL when the controller
     //  is placed in BDM.
-    FTM0->CONF = 0x40;
+    FTM0->CONF = 0x00;
 
     FTM0->SYNCONF |= (FTM_SYNCONF_SYNCMODE_MASK | FTM_SYNCONF_SWOM_MASK |
     		FTM_SYNCONF_SWWRBUF_MASK | FTM_SYNCONF_SWINVC_MASK | FTM_SYNCONF_SWSOC_MASK);
@@ -173,7 +172,7 @@ void Amp_Init(void)
     FTM0->SWOCTRL = 0;
 
     // Set the Dead time to n counts.
-    FTM0->DEADTIME = 0x0;
+    FTM0->DEADTIME = 0x40;
 
     FTM0->PWMLOAD |= (FTM_PWMLOAD_LDOK_MASK);
 
@@ -183,15 +182,7 @@ void Amp_Init(void)
     //  DTEN = 1 - Enable dead-time
     //  SYNCEN = 1 - PWM update synchronization enabled,
     //  FAULTEN = 1 - fault control enabled
-    FTM0->COMBINE = FTM_COMBINE_SYNCEN0_MASK | FTM_COMBINE_DTEN0_MASK
-               | FTM_COMBINE_COMP0_MASK   | FTM_COMBINE_COMBINE0_MASK
-               | FTM_COMBINE_FAULTEN0_MASK
-               | FTM_COMBINE_SYNCEN1_MASK | FTM_COMBINE_DTEN1_MASK
-               | FTM_COMBINE_COMP1_MASK   | FTM_COMBINE_COMBINE1_MASK
-               | FTM_COMBINE_FAULTEN1_MASK
-               | FTM_COMBINE_SYNCEN2_MASK | FTM_COMBINE_DTEN2_MASK
-               | FTM_COMBINE_COMP2_MASK   | FTM_COMBINE_COMBINE2_MASK
-               |FTM_COMBINE_FAULTEN2_MASK;
+    FTM0->COMBINE = 0x00;
 
     // SWSYNC = 1 - set PWM value update. This bit is cleared automatically
     FTM0->SYNC |= FTM_SYNC_SWSYNC_MASK;
@@ -213,6 +204,9 @@ void Amp_Init(void)
     FTM0->CONTROLS[5].CnV = gl_amp_null_dutycycle;
 
     FTM0->OUTMASK = 0x00;//gun_amp_mask_table[gl_amp_cntrl[AMP_COMMUTATION]];
+
+    FTM0->INVCTRL = AMP_INVERT_NONE;
+    FTM0->OUTMASK = AMP_DISABLE_ALL_PH;
 
     // SWSYNC = 1 - set PWM value update. This bit is cleared automatically
     FTM0->SYNC |= FTM_SYNC_SWSYNC_MASK;
@@ -324,7 +318,7 @@ void Amp_ADC0_Init_Sampling (void)
     // Set the delay to the middle of the PWM period
     // TODO Need to figure out optimal location for PDB trigger. Use interrupt
     // to find best location
-    PDB0->CH[0].DLY[0] = 1500;//AMP_SYS_CLK/AMP_PWM_FREQ/2;
+    PDB0->CH[0].DLY[0] = 1000;//AMP_SYS_CLK/AMP_PWM_FREQ/2;
 
     // Start up the unit, including initializing the interrupt
     PDB0->SC = (PDB_SC_PDBEN_MASK | PDB_SC_PRESCALER (0X0) |
@@ -336,7 +330,7 @@ void Amp_ADC0_Init_Sampling (void)
     // ADLSMP = 1 - Long Sample Time
     // ADIV = 0b10 - Divide Ratio is 4
     ADC0->CFG1 = ADC_CFG1_ADICLK(0x0) | ADC_CFG1_MODE(0x3) |
-    		ADC_CFG1_ADLSMP(0x1) | ADC_CFG1_ADIV(0x2);
+    		ADC_CFG1_ADLSMP(0x1) | ADC_CFG1_ADIV(0x0);
 
     // CFG2:
     // ADLSTS = 0b10 - 6 extra ADCK cycles; 10 ADCK cycles total sample time
@@ -454,7 +448,7 @@ void Amp_Foreground_Update(void)
         {
         	ul_count++;
 
-        	if (ul_count >= 4000)
+        	if (ul_count >= 20000)
         	{
             	gl_amp_cntrl[AMP_COMMUTATION]++;
 

@@ -6,7 +6,7 @@
  * Generated linker script file for MKV31F256xxx12
  * Created from library.ldt by FMCreateLinkLibraries
  * Using Freemarker v2.3.23
- * MCUXpresso IDE v11.0.1 [Build 2563] [2019-09-01] on Feb 1, 2021 4:23:36 PM
+ * MCUXpresso IDE v11.0.1 [Build 2563] [2019-09-01] on Apr 19, 2021 7:05:44 PM
  */
 
 GROUP (
